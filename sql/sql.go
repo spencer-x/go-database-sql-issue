@@ -1219,7 +1219,7 @@ func (db *DB) connectionOpener(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-db.OpenerCh:
-			db.openNewConnection(ctx)
+			go db.openNewConnection(ctx)
 		}
 	}
 }
