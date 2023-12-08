@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/stdlib"
+	"go-database-sql-issue/sql"
+	"go-database-sql-issue/stdlib"
 	"golang.org/x/sync/errgroup"
 	"sync/atomic"
 	"time"
