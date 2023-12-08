@@ -37,7 +37,14 @@ func main() {
 		for {
 			select {
 			case <-t.C:
-				fmt.Printf("time: %vs err/req (%d/%d) DB stats: %+v\n", time.Since(start).Seconds(), errCount.Swap(0), reqCount.Swap(0), db.Stats())
+				fmt.Printf("time: %vs, err/req (%d/%d), NumConnClosed: %d, NumConnRequests: %d, NumPendingOpenConn: %d, DB stats: %+v\n",
+					time.Since(start).Seconds(),
+					errCount.Swap(0),
+					reqCount.Swap(0),
+					db.NumClosed.Load(),
+					len(db.ConnRequests),
+					len(db.OpenerCh),
+					db.Stats())
 			case <-ctx.Done():
 				t.Stop()
 				return ctx.Err()
