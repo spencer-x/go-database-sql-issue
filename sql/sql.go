@@ -457,22 +457,22 @@ type DB struct {
 	waitDuration atomic.Int64
 
 	connector driver.Connector
-	// numClosed is an atomic counter which represents a total number of
+	// NumClosed is an atomic counter which represents a total number of
 	// closed connections. Stmt.openStmt checks it before cleaning closed
 	// connections in Stmt.css.
-	numClosed atomic.Uint64
+	NumClosed atomic.Uint64
 
 	mu           sync.Mutex    // protects following fields
 	freeConn     []*driverConn // free connections ordered by returnedAt oldest to newest
-	connRequests map[uint64]chan connRequest
-	nextRequest  uint64 // Next key to use in connRequests.
+	ConnRequests map[uint64]chan connRequest
+	nextRequest  uint64 // Next key to use in ConnRequests.
 	numOpen      int    // number of opened and pending open connections
 	// Used to signal the need for new connections
 	// a goroutine running connectionOpener() reads on this chan and
 	// maybeOpenNewConnections sends on the chan (one send per needed connection)
 	// It is closed during db.Close(). The close tells the connectionOpener
 	// goroutine to exit.
-	openerCh          chan struct{}
+	OpenerCh          chan struct{}
 	closed            bool
 	dep               map[finalCloser]depSet
 	lastPut           map[*driverConn]string // stacktrace of last conn's put; debug only
@@ -650,7 +650,7 @@ func (dc *driverConn) finalClose() error {
 	dc.db.maybeOpenNewConnections()
 	dc.db.mu.Unlock()
 
-	dc.db.numClosed.Add(1)
+	dc.db.NumClosed.Add(1)
 	return err
 }
 
@@ -742,7 +742,7 @@ func (db *DB) removeDepLocked(x finalCloser, dep any) func() error {
 	}
 }
 
-// This is the size of the connectionOpener request chan (DB.openerCh).
+// This is the size of the connectionOpener request chan (DB.OpenerCh).
 // This value should be larger than the maximum typical value
 // used for db.maxOpen. If maxOpen is significantly larger than
 // connectionRequestQueueSize then it is possible for ALL calls into the *DB
@@ -782,9 +782,9 @@ func OpenDB(c driver.Connector) *DB {
 	ctx, cancel := context.WithCancel(context.Background())
 	db := &DB{
 		connector:    c,
-		openerCh:     make(chan struct{}, connectionRequestQueueSize),
+		OpenerCh:     make(chan struct{}, connectionRequestQueueSize),
 		lastPut:      make(map[*driverConn]string),
-		connRequests: make(map[uint64]chan connRequest),
+		ConnRequests: make(map[uint64]chan connRequest),
 		stop:         cancel,
 	}
 
@@ -889,7 +889,7 @@ func (db *DB) Close() error {
 	}
 	db.freeConn = nil
 	db.closed = true
-	for _, req := range db.connRequests {
+	for _, req := range db.ConnRequests {
 		close(req)
 	}
 	db.mu.Unlock()
@@ -1192,10 +1192,10 @@ func (db *DB) Stats() DBStats {
 }
 
 // Assumes db.mu is locked.
-// If there are connRequests and the connection limit hasn't been reached,
+// If there are ConnRequests and the connection limit hasn't been reached,
 // then tell the connectionOpener to open new connections.
 func (db *DB) maybeOpenNewConnections() {
-	numRequests := len(db.connRequests)
+	numRequests := len(db.ConnRequests)
 	if db.maxOpen > 0 {
 		numCanOpen := db.maxOpen - db.numOpen
 		if numRequests > numCanOpen {
@@ -1208,7 +1208,7 @@ func (db *DB) maybeOpenNewConnections() {
 		if db.closed {
 			return
 		}
-		db.openerCh <- struct{}{}
+		db.OpenerCh <- struct{}{}
 	}
 }
 
@@ -1218,7 +1218,7 @@ func (db *DB) connectionOpener(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-db.openerCh:
+		case <-db.OpenerCh:
 			db.openNewConnection(ctx)
 		}
 	}
@@ -1227,7 +1227,7 @@ func (db *DB) connectionOpener(ctx context.Context) {
 // Open one new connection
 func (db *DB) openNewConnection(ctx context.Context) {
 	// maybeOpenNewConnections has already executed db.numOpen++ before it sent
-	// on db.openerCh. This function must execute db.numOpen-- if the
+	// on db.OpenerCh. This function must execute db.numOpen-- if the
 	// connection fails or is closed before returning.
 	ci, err := db.connector.Connect(ctx)
 	db.mu.Lock()
@@ -1261,7 +1261,7 @@ func (db *DB) openNewConnection(ctx context.Context) {
 
 // connRequest represents one request for a new connection
 // When there are no idle connections available, DB.conn will create
-// a new connRequest and put it on the db.connRequests list.
+// a new connRequest and put it on the db.ConnRequests list.
 type connRequest struct {
 	conn *driverConn
 	err  error
@@ -1325,7 +1325,7 @@ func (db *DB) conn(ctx context.Context, strategy connReuseStrategy) (*driverConn
 		// connectionOpener doesn't block while waiting for the req to be read.
 		req := make(chan connRequest, 1)
 		reqKey := db.nextRequestKeyLocked()
-		db.connRequests[reqKey] = req
+		db.ConnRequests[reqKey] = req
 		db.waitCount++
 		db.mu.Unlock()
 
@@ -1337,7 +1337,7 @@ func (db *DB) conn(ctx context.Context, strategy connReuseStrategy) (*driverConn
 			// Remove the connection request and ensure no value has been sent
 			// on it after removing.
 			db.mu.Lock()
-			delete(db.connRequests, reqKey)
+			delete(db.ConnRequests, reqKey)
 			db.mu.Unlock()
 
 			db.waitDuration.Add(int64(time.Since(waitStart)))
@@ -1502,13 +1502,13 @@ func (db *DB) putConnDBLocked(dc *driverConn, err error) bool {
 	if db.maxOpen > 0 && db.numOpen > db.maxOpen {
 		return false
 	}
-	if c := len(db.connRequests); c > 0 {
+	if c := len(db.ConnRequests); c > 0 {
 		var req chan connRequest
 		var reqKey uint64
-		for reqKey, req = range db.connRequests {
+		for reqKey, req = range db.ConnRequests {
 			break
 		}
-		delete(db.connRequests, reqKey) // Remove from pending requests.
+		delete(db.ConnRequests, reqKey) // Remove from pending requests.
 		if err == nil {
 			dc.inUse = true
 		}
@@ -1618,7 +1618,7 @@ func (db *DB) prepareDC(ctx context.Context, dc *driverConn, release func(error)
 	// the DB.
 	if cg == nil {
 		stmt.css = []connStmt{{dc, ds}}
-		stmt.lastNumClosed = db.numClosed.Load()
+		stmt.lastNumClosed = db.NumClosed.Load()
 		db.addDep(stmt, stmt)
 	}
 	return stmt, nil
@@ -2588,7 +2588,7 @@ type Stmt struct {
 	// connections. If cg != nil, cgds is always used.
 	css []connStmt
 
-	// lastNumClosed is copied from db.numClosed when Stmt is created
+	// lastNumClosed is copied from db.NumClosed when Stmt is created
 	// without tx and closed connections in css are removed.
 	lastNumClosed uint64
 }
@@ -2642,13 +2642,13 @@ func resultFromStatement(ctx context.Context, ci driver.Conn, ds *driverStmt, ar
 // removeClosedStmtLocked removes closed conns in s.css.
 //
 // To avoid lock contention on DB.mu, we do it only when
-// s.db.numClosed - s.lastNum is large enough.
+// s.db.NumClosed - s.lastNum is large enough.
 func (s *Stmt) removeClosedStmtLocked() {
 	t := len(s.css)/2 + 1
 	if t > 10 {
 		t = 10
 	}
-	dbClosed := s.db.numClosed.Load()
+	dbClosed := s.db.NumClosed.Load()
 	if dbClosed-s.lastNumClosed < uint64(t) {
 		return
 	}
